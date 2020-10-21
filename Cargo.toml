@@ -9,6 +9,10 @@ repository = "https://github.com/Yoshanuikabundi/mbar-rs"
 keywords = ["python", "mbar", "molecular-dynamics", "stat-mech"]
 categories = ["api-bindings", "mathematics", "science"]
 license = "MIT OR Apache-2.0"
+exclude = [
+    "mbar-rs.sublime-project",
+    "mbar-rs.sublime-workspace"
+]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
