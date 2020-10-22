@@ -1,6 +1,6 @@
 [package]
 name = "mbar-rs"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Josh Mitchell <yoshanuikabundi@gmail.com>"]
 edition = "2018"
 description = "Rust bindings for pymbar"
@@ -8,7 +8,7 @@ readme = "README.md"
 repository = "https://github.com/Yoshanuikabundi/mbar-rs"
 keywords = ["python", "mbar", "molecular-dynamics", "stat-mech"]
 categories = ["api-bindings", "mathematics", "science"]
-license = "MIT OR Apache-2.0"
+license = "MIT"
 exclude = [
     "mbar-rs.sublime-project",
     "mbar-rs.sublime-workspace"

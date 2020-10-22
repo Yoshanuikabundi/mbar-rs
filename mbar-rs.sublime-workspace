@@ -4,6 +4,42 @@
 		"selected_items":
 		[
 			[
+				"bin",
+				"bin_n"
+			],
+			[
+				"as_",
+				"as_ref()\t  fn as_ref(&self) -> &T"
+			],
+			[
+				"default",
+				"default_none"
+			],
+			[
+				"maxim",
+				"maximum_iterations"
+			],
+			[
+				"mbar",
+				"mbar_obj\t  &PyAny"
+			],
+			[
+				"to_",
+				"to_object(…)\t  fn to_object(&self, py: Python) -> PyObject"
+			],
+			[
+				"print",
+				"println!(…)\t  #[macro_export]\nmacro_rules! println"
+			],
+			[
+				"initila",
+				"initialize"
+			],
+			[
+				"prin",
+				"println!(…)\t  #[macro_export]\nmacro_rules! println"
+			],
+			[
 				"Ini",
 				"InitialFreeEnergies::Zeros\t  ()"
 			],
@@ -22,10 +58,6 @@
 			[
 				"max",
 				"maximum_iterations"
-			],
-			[
-				"print",
-				"eprintln!(…)\t  #[macro_export]\nmacro_rules! eprintln"
 			],
 			[
 				"Prin",
@@ -226,10 +258,6 @@
 			[
 				"rewei",
 				"reweight_pmf_to"
-			],
-			[
-				"to_",
-				"to_string()\t  fn to_string(&self) -> String"
 			],
 			[
 				"compute_",
@@ -486,34 +514,6 @@
 			[
 				"preamb",
 				"preamble_fn"
-			],
-			[
-				"prea",
-				"preamble_fn"
-			],
-			[
-				"note",
-				"notes_to_tablenotes_data"
-			],
-			[
-				"notes",
-				"notes_to_tablenotes"
-			],
-			[
-				"Ran",
-				"RawInline"
-			],
-			[
-				"tab",
-				"tablenotes"
-			],
-			[
-				"bib",
-				"bibliography"
-			],
-			[
-				"pand",
-				"pandoc_kwargs"
 			]
 		]
 	},
@@ -523,19 +523,52 @@
 			"file": "Cargo.toml",
 			"settings":
 			{
-				"buffer_size": 398,
+				"buffer_size": 785,
 				"encoding": "UTF-8",
 				"line_ending": "Unix"
 			}
 		},
 		{
-			"contents": "#![warn(rust_2018_idioms, missing_docs, missing_debug_implementations)]\n#![allow(incomplete_features)]\n#![feature(const_generics)]\n\n//! The multistate Bennett acceptance ratio (MBAR) method for the analysis of equilibrium samples\n//! from multiple arbitrary thermodynamic states in computing equilibrium expectations, free energy\n//! differences, potentials of mean force, and entropy and enthalpy contributions.\n//!\n//! Please reference the following if you use this code in your research:\n//!\n//! [1] Shirts MR and Chodera JD. Statistically optimal analysis of samples from multiple\n//! equilibrium states. J. Chem. Phys. 129:124105, 2008. <http://dx.doi.org/10.1063/1.2978177>\n\n#[macro_use]\nextern crate derive_builder;\n\nuse pyo3::prelude::*;\nuse pyo3::types::PyDict;\n\n/// `InitMBar::BAR` works best when the states are ordered such that adjacent states maximize\n/// the overlap between states. Its up to the user to arrange the states in such an order, or at\n/// least close to such an order. If you are uncertain what the order of states should be, or if\n/// it does not make sense to think of states as adjacent, then choose `InitMBar::Zeros`.\n#[derive(Debug, Clone, Copy, PartialEq)]\npub enum InitialFreeEnergies<const K: usize> {\n    /// Use the specified free energy values\n    Specified([f64; K]),\n    /// Initialize all free energies to zero\n    Zeros,\n    /// Use BAR between the pairwise state to initialize the free energies.\n    ///\n    /// Eventually, should specify a path; for now, it just does it zipping up the states.\n    BAR,\n}\n\nimpl<const K: usize> Default for InitialFreeEnergies<K> {\n    fn default() -> Self {\n        Self::Zeros\n    }\n}\n\n/// Multistate Bennett acceptance ratio method (MBAR) for the analysis of multiple equilibrium\n/// samples.\n///\n/// # Notes\n///\n/// Note that this method assumes the data are uncorrelated.\n///\n/// Correlated data must be subsampled to extract uncorrelated (effectively independent) samples.\n///\n/// # References\n///\n/// [1] Shirts MR and Chodera JD. Statistically optimal analysis of samples from multiple\n/// equilibrium states. J. Chem. Phys. 129:124105, 2008 http://dx.doi.org/10.1063/1.2978177\n#[derive(Builder, Debug)]\npub struct MBar<const N_MAX: usize, const K: usize> {\n    /// `u_kn[k][n]` is the reduced potential energy of configuration n evaluated at state `k`\n    u_kn: [[f64; N_MAX]; K],\n\n    /// `n_k[k]` is the number of uncorrelated snapshots sampled from state `k`\n    ///\n    /// We assume that the states are ordered such that the first `n_k` are from the first state, the\n    /// 2nd `n_k` the second state, and so forth. This only becomes important for BAR – MBAR does not\n    /// care which samples are from which state. We should eventually allow this assumption to be\n    /// overwritten by parameters passed from above, once u_kln is phased out.\n    n_k: [usize; K],\n\n    /// Set to limit the maximum number of iterations performed\n    #[builder(default = \"1000\")]\n    maximum_iterations: usize,\n\n    /// Set to determine the relative tolerance convergence criteria\n    #[builder(default = \"1.0e-6\")]\n    relative_tolerance: f64,\n\n    /// Set to True if verbose debug output is desired\n    #[builder(default = \"false\")]\n    verbosity: bool,\n\n    /// Set to the initial dimensionless free energies to use as a guess\n    #[builder(default)]\n    initial_free_energies: InitialFreeEnergies<K>,\n\n    /// Which state is each x from?\n    ///\n    /// Usually doesn’t matter, but does for BAR. We assume the samples are in K order (the first\n    /// `n_k[0]` samples are from the 0th state, the next `n_k[1]` samples from the 1st state, and\n    /// so forth.\n    #[builder(setter(strip_option), default)]\n    x_kindices: Option<Vec<usize>>,\n\n    #[builder(setter(skip), default)]\n    mbar_obj: Option<PyObject>,\n}\n\nimpl<const N_MAX: usize, const K: usize> MBar<N_MAX, K> {\n    pub fn init(&mut self) -> PyResult<&mut Self> {\n        let u_kn_refs: Vec<&[f64]> = self.u_kn.iter().map(|inner| inner.as_ref()).collect();\n\n        self.mbar_obj = Some(Python::with_gil(|py| -> PyResult<PyObject> {\n            let mbar = py.import(\"pymbar\")?.get(\"MBAR\")?;\n            let kwargs = PyDict::new(py);\n            kwargs.set_item(\"u_kn\", u_kn_refs)?;\n            kwargs.set_item(\"N_k\", self.n_k.as_ref())?;\n            kwargs.set_item(\"maximum_iterations\", self.maximum_iterations)?;\n            kwargs.set_item(\"relative_tolerance\", self.relative_tolerance)?;\n            kwargs.set_item(\"verbosity\", self.verbosity)?;\n            kwargs.set_item(\"x_kindices\", self.x_kindices.clone())?;\n\n            match self.initial_free_energies {\n                InitialFreeEnergies::Specified(energies) => {\n                    kwargs.set_item(\"initial_f_k\", energies.as_ref())?;\n                }\n                InitialFreeEnergies::Zeros => {\n                    kwargs.set_item(\"initialize\", \"zeros\")?;\n                }\n                InitialFreeEnergies::BAR => {\n                    kwargs.set_item(\"initialize\", \"BAR\")?;\n                }\n            }\n\n            let mbar_obj = mbar.call((), Some(kwargs))?;\n\n            Ok(mbar_obj.into())\n        })?);\n\n        Ok(self)\n    }\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn build_mbar() {\n        let mbar = MBarBuilder::<2, 3>::default()\n            .u_kn([[1.4, 2.3], [3.7, 4.1], [7.7, 9.1]])\n            .n_k([2, 2, 2])\n            .build()\n            .unwrap();\n\n        assert_eq!(mbar.u_kn, [[1.4, 2.3], [3.7, 4.1], [7.7, 9.1]]);\n        assert_eq!(mbar.n_k, [2, 2, 2]);\n        assert_eq!(mbar.maximum_iterations, 1000);\n        assert_eq!(mbar.relative_tolerance, 1.0e-6);\n        assert_eq!(mbar.verbosity, false);\n        assert_eq!(mbar.initial_free_energies, InitialFreeEnergies::Zeros);\n        assert_eq!(mbar.x_kindices, None);\n    }\n\n    #[test]\n    fn init_mbar() {\n        let mut mbar = MBarBuilder::<2, 3>::default()\n            .u_kn([[1.4, 2.3 ], [3.7, 4.1], [7.7, 9.1]])\n            .n_k([2, 2, 2])\n            .build()\n            .unwrap();\n\n        mbar.init()\n            .map_err(|e| {\n                Python::with_gil(|py| e.print(py));\n                e\n            })\n            .unwrap();\n\n        assert!(mbar.mbar_obj.is_some());\n    }\n}\n",
-			"file": "src/lib.rs",
-			"file_size": 6225,
-			"file_write_time": 132476742998245758,
+			"file": "README.md",
 			"settings":
 			{
-				"buffer_size": 6222,
+				"buffer_size": 1217,
+				"encoding": "UTF-8",
+				"line_ending": "Unix"
+			}
+		},
+		{
+			"file": ".gitignore",
+			"settings":
+			{
+				"buffer_size": 45,
+				"encoding": "UTF-8",
+				"line_ending": "Unix"
+			}
+		},
+		{
+			"file": "src/main.rs",
+			"settings":
+			{
+				"buffer_size": 578,
+				"encoding": "UTF-8",
+				"line_ending": "Unix"
+			}
+		},
+		{
+			"file": "src/lib.rs",
+			"settings":
+			{
+				"buffer_size": 12330,
+				"encoding": "UTF-8",
+				"line_ending": "Unix"
+			}
+		},
+		{
+			"file": "/home/joshmitchell/conda/envs/mdjupyter/lib/python3.7/site-packages/pymbar/mbar.py",
+			"settings":
+			{
+				"buffer_size": 81517,
 				"encoding": "UTF-8",
 				"line_ending": "Unix"
 			}
@@ -552,6 +585,10 @@
 		"last_filter": "",
 		"selected_items":
 		[
+			[
+				"server",
+				"LSP: Restart Servers"
+			],
 			[
 				"search",
 				"Search In Project"
@@ -1059,10 +1096,6 @@
 			[
 				"add",
 				"Git: Add..."
-			],
-			[
-				"comm",
-				"Git: Commit"
 			]
 		],
 		"width": 551.0
@@ -1197,6 +1230,13 @@
 	],
 	"file_history":
 	[
+		"/home/joshmitchell/Projects/mbar-rs/LICENSE-APACHE",
+		"/home/joshmitchell/Projects/mbar-rs/src/bin.rs",
+		"/home/joshmitchell/Projects/pyo3-mcve/Cargo.toml",
+		"/home/joshmitchell/Projects/pyo3-mcve/src/main.rs",
+		"/home/joshmitchell/conda/envs/mdjupyter/lib/python3.7/site-packages/pymbar/mbar_solvers.py",
+		"/home/joshmitchell/conda/envs/mdjupyter/lib/python3.7/site-packages/pymbar/mbar.py",
+		"/home/joshmitchell/conda/envs/mdjupyter/lib/python3.7/site-packages/pymbar/mbar",
 		"/store/joshmitchell/dye-gly/MARTINI AWH/awhl-rs/reweighted_pmf.awh_only.mdld.xvg",
 		"/store/joshmitchell/dye-gly/MARTINI AWH/awhl-rs/reweighted_pmf.EAAAK.fret.xvg",
 		"/store/joshmitchell/dye-gly/MARTINI AWH/awhl-rs/reweighted_pmf.GGGGS3.fret.xvg",
@@ -1317,18 +1357,11 @@
 		"/store/joshmitchell/dye-gly/MARTINI AWH/01-setup-cfp/chromophore/03-pycgtool/pycgtool/pycgtool/mapping.py",
 		"/store/joshmitchell/dye-gly/MARTINI AWH/01-setup-cfp/chromophore/03-pycgtool/pycgtool/pycgtool/bondset.py",
 		"/store/joshmitchell/dye-gly/MARTINI AWH/01-setup-cfp/chromophore/03-pycgtool/pycgtool/pycgtool/functionalforms.py",
-		"/home/joshmitchell/Documents/thesis/.latexmkrc",
-		"/home/joshmitchell/Documents/thesis/.github/workflows/main.yml",
-		"/home/joshmitchell/Documents/thesis/README.md",
-		"/home/joshmitchell/bin/python_packages/JupyterJoy/simtools/gromacs_system.py",
-		"/store/joshmitchell/dye-gly/MARTINI AWH/01-setup-cfp/chromophore/auto_martini/auto_martini",
-		"/store/joshmitchell/dye-gly/MARTINI AWH/01-setup-cfp/chromophore/auto_martini/sanifix4.py",
-		"/store/joshmitchell/dye-gly/MARTINI AWH/01-setup-cfp/chromophore/pycgtool/pycgtool.py",
-		"/store/joshmitchell/dye-gly/MARTINI AWH/01-setup-cfp/chromophore/CRF.MAP"
+		"/home/joshmitchell/Documents/thesis/.latexmkrc"
 	],
 	"find":
 	{
-		"height": 27.0
+		"height": 39.0
 	},
 	"find_in_files":
 	{
@@ -1342,6 +1375,11 @@
 		"case_sensitive": false,
 		"find_history":
 		[
+			"computeUnnor",
+			"solve_mbar",
+			"mbar_sol",
+			"()),",
+			"N_MAX"
 		],
 		"highlight": true,
 		"in_selection": false,
@@ -1349,6 +1387,7 @@
 		"regex": true,
 		"replace_history":
 		[
+			"N_TOT"
 		],
 		"reverse": false,
 		"show_context": true,
@@ -1359,7 +1398,7 @@
 	"groups":
 	[
 		{
-			"selected": 1,
+			"selected": 0,
 			"sheets":
 			[
 				{
@@ -1368,23 +1407,23 @@
 					"semi_transient": false,
 					"settings":
 					{
-						"buffer_size": 398,
+						"buffer_size": 785,
 						"regions":
 						{
 						},
 						"selection":
 						[
 							[
-								317,
-								317
+								431,
+								431
 							]
 						],
 						"settings":
 						{
 							"WordCount":
 							{
-								"changes": 16,
-								"count": 27,
+								"changes": 261,
+								"count": 57,
 								"modified": false,
 								"selection": false,
 								"status": -1,
@@ -1396,32 +1435,156 @@
 						"translation.y": 0.0,
 						"zoom_level": 1.0
 					},
-					"stack_index": 1,
+					"stack_index": 0,
 					"type": "text"
 				},
 				{
 					"buffer": 1,
-					"file": "src/lib.rs",
+					"file": "README.md",
 					"semi_transient": false,
 					"settings":
 					{
-						"buffer_size": 6222,
+						"buffer_size": 1217,
 						"regions":
 						{
 						},
 						"selection":
 						[
 							[
-								5915,
-								5915
+								1184,
+								1184
 							]
 						],
 						"settings":
 						{
 							"WordCount":
 							{
-								"changes": 4634,
-								"count": 482,
+								"changes": 612,
+								"count": 112,
+								"modified": false,
+								"selection": false,
+								"status": -1,
+								"syntax": "plain text"
+							},
+							"syntax": "Packages/MathademicMarkdown/MathademicMarkdown.sublime-syntax"
+						},
+						"translation.x": 0.0,
+						"translation.y": 0.0,
+						"zoom_level": 1.0
+					},
+					"stack_index": 1,
+					"type": "text"
+				},
+				{
+					"buffer": 2,
+					"file": ".gitignore",
+					"semi_transient": false,
+					"settings":
+					{
+						"buffer_size": 45,
+						"regions":
+						{
+						},
+						"selection":
+						[
+							[
+								44,
+								44
+							]
+						],
+						"settings":
+						{
+							"WordCount":
+							{
+								"changes": 2,
+								"count": 3,
+								"modified": false,
+								"selection": false,
+								"status": -1,
+								"syntax": "plain text"
+							},
+							"syntax": "Packages/Git Formats/Git Ignore.sublime-syntax"
+						},
+						"translation.x": 0.0,
+						"translation.y": 0.0,
+						"zoom_level": 1.0
+					},
+					"stack_index": 3,
+					"type": "text"
+				},
+				{
+					"buffer": 3,
+					"file": "src/main.rs",
+					"semi_transient": false,
+					"settings":
+					{
+						"buffer_size": 578,
+						"regions":
+						{
+						},
+						"selection":
+						[
+							[
+								0,
+								0
+							]
+						],
+						"settings":
+						{
+							"WordCount":
+							{
+								"changes": 442,
+								"count": 27,
+								"modified": false,
+								"selection": true,
+								"status": -1,
+								"syntax": "plain text"
+							},
+							"auto_complete_triggers":
+							[
+								{
+									"characters": ".:",
+									"selector": "source.rust"
+								}
+							],
+							"lsp_active": true,
+							"lsp_language":
+							{
+								"rust-analyzer": "rust"
+							},
+							"show_definitions": false,
+							"syntax": "Packages/Rust Enhanced/RustEnhanced.sublime-syntax"
+						},
+						"translation.x": 0.0,
+						"translation.y": 0.0,
+						"zoom_level": 1.0
+					},
+					"stack_index": 2,
+					"type": "text"
+				},
+				{
+					"buffer": 4,
+					"file": "src/lib.rs",
+					"semi_transient": false,
+					"settings":
+					{
+						"buffer_size": 12330,
+						"regions":
+						{
+						},
+						"selection":
+						[
+							[
+								7105,
+								7105
+							]
+						],
+						"settings":
+						{
+							"WordCount":
+							{
+								"changes": 7252,
+								"count": 931,
 								"modified": false,
 								"selection": false,
 								"status": -1,
@@ -1443,10 +1606,48 @@
 							"syntax": "Packages/Rust Enhanced/RustEnhanced.sublime-syntax"
 						},
 						"translation.x": 0.0,
-						"translation.y": 1981.0,
+						"translation.y": 3735.0,
 						"zoom_level": 1.0
 					},
-					"stack_index": 0,
+					"stack_index": 4,
+					"type": "text"
+				},
+				{
+					"buffer": 5,
+					"file": "/home/joshmitchell/conda/envs/mdjupyter/lib/python3.7/site-packages/pymbar/mbar.py",
+					"semi_transient": false,
+					"settings":
+					{
+						"buffer_size": 81517,
+						"regions":
+						{
+						},
+						"selection":
+						[
+							[
+								66153,
+								66153
+							]
+						],
+						"settings":
+						{
+							"WordCount":
+							{
+								"changes": -1,
+								"modified": true,
+								"selection": true,
+								"status": -1,
+								"syntax": "python"
+							},
+							"syntax": "Packages/Python/Python.sublime-syntax",
+							"tab_size": 4,
+							"translate_tabs_to_spaces": true
+						},
+						"translation.x": 0.0,
+						"translation.y": 25964.0,
+						"zoom_level": 1.0
+					},
+					"stack_index": 5,
 					"type": "text"
 				}
 			]
@@ -1503,7 +1704,7 @@
 	"project": "mbar-rs.sublime-project",
 	"replace":
 	{
-		"height": 50.0
+		"height": 70.0
 	},
 	"save_all_on_build": true,
 	"select_file":
