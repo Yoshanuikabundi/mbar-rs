@@ -1,35 +1,60 @@
-#![warn(rust_2018_idioms, missing_docs, missing_debug_implementations)]
-#![allow(incomplete_features)]
-#![feature(const_generics)]
-
 //! The multistate Bennett acceptance ratio (MBAR) method for the analysis of equilibrium samples
 //! from multiple arbitrary thermodynamic states in computing equilibrium expectations, free energy
 //! differences, potentials of mean force, and entropy and enthalpy contributions.
 //!
 //! Please reference the following if you use this code in your research:
 //!
-//! [1] Shirts MR and Chodera JD. Statistically optimal analysis of samples from multiple
+//! Shirts MR and Chodera JD. Statistically optimal analysis of samples from multiple
 //! equilibrium states. J. Chem. Phys. 129:124105, 2008. <http://dx.doi.org/10.1063/1.2978177>
+
+#![warn(rust_2018_idioms, missing_docs, missing_debug_implementations)]
 
 #[macro_use]
 extern crate derive_builder;
 
-use numpy::PyArray;
+use numpy::{PyArray, PyArray2};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use thiserror::Error;
 
-use std::error::Error;
+/// Enum for errors in this crate
+#[derive(Error, Debug)]
+pub enum MBarError {
+    /// Error returned when MBarBuilder.build() was called improperly
+    #[error("Could not build MBar: {0}")]
+    BuilderError(String),
 
-type Result<T> = std::result::Result<T, Box<dyn Error>>;
+    /// Error returned when a python exception is not handled
+    #[error("Unexpected Python exception was not handled")]
+    UnhandledPythonException {
+        #[allow(missing_docs)]
+        #[from]
+        source: PyErr,
+    },
 
+    /// Error returned when an array is the wrong length
+    #[error("Array of length {0} is incorrect; length should be {1}")]
+    ArrayLengthMismatch(usize, usize),
+}
+
+impl From<String> for MBarError {
+    fn from(s: String) -> Self {
+        Self::BuilderError(s)
+    }
+}
+
+type Result<T> = std::result::Result<T, MBarError>;
+
+/// Define the initial guess for free energies
+///
 /// `InitMBar::BAR` works best when the states are ordered such that adjacent states maximize
 /// the overlap between states. Its up to the user to arrange the states in such an order, or at
 /// least close to such an order. If you are uncertain what the order of states should be, or if
 /// it does not make sense to think of states as adjacent, then choose `InitMBar::Zeros`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum InitialFreeEnergies<const K: usize> {
+#[derive(Debug, Clone, PartialEq)]
+pub enum InitialFreeEnergies {
     /// Use the specified free energy values
-    Specified([f64; K]),
+    Specified(Vec<f64>),
     /// Initialize all free energies to zero
     Zeros,
     /// Use BAR between the pairwise state to initialize the free energies.
@@ -38,7 +63,7 @@ pub enum InitialFreeEnergies<const K: usize> {
     BAR,
 }
 
-impl<const K: usize> Default for InitialFreeEnergies<K> {
+impl Default for InitialFreeEnergies {
     fn default() -> Self {
         Self::Zeros
     }
@@ -55,21 +80,21 @@ impl<const K: usize> Default for InitialFreeEnergies<K> {
 ///
 /// # References
 ///
-/// [1] Shirts MR and Chodera JD. Statistically optimal analysis of samples from multiple
-/// equilibrium states. J. Chem. Phys. 129:124105, 2008 http://dx.doi.org/10.1063/1.2978177
+/// 1. Shirts MR and Chodera JD. Statistically optimal analysis of samples from multiple
+/// equilibrium states. J. Chem. Phys. 129:124105, 2008 <http://dx.doi.org/10.1063/1.2978177>
 #[derive(Builder, Debug)]
 #[builder(build_fn(validate = "Self::validate", name = "build_inner", private))]
-pub struct MBar<const N_TOT: usize, const K: usize> {
+pub struct MBar {
     /// `u_kn[k][n]` is the reduced potential energy of configuration n evaluated at state `k`
-    u_kn: [[f64; N_TOT]; K],
+    u_kn: ndarray::Array2<f64>,
 
     /// `n_k[k]` is the number of uncorrelated snapshots sampled from state `k`
     ///
     /// We assume that the states are ordered such that the first `n_k` are from the first state, the
-    /// 2nd `n_k` the second state, and so forth. This only becomes important for BAR – MBAR does not
-    /// care which samples are from which state. We should eventually allow this assumption to be
-    /// overwritten by parameters passed from above, once u_kln is phased out.
-    n_k: [usize; K],
+    /// 2nd `n_k` the second state, and so forth. This only becomes important for BAR --- MBAR does
+    /// not care which samples are from which state. We should eventually allow this assumption to
+    /// be overwritten by parameters passed from above, once u_kln is phased out.
+    n_k: ndarray::Array1<usize>,
 
     /// Set to limit the maximum number of iterations performed
     #[builder(default = "1000")]
@@ -79,13 +104,9 @@ pub struct MBar<const N_TOT: usize, const K: usize> {
     #[builder(default = "1.0e-6")]
     relative_tolerance: f64,
 
-    /// Set to True if verbose debug output is desired
-    #[builder(default = "false")]
-    verbose: bool,
-
     /// Set to the initial dimensionless free energies to use as a guess
     #[builder(default)]
-    initial_free_energies: InitialFreeEnergies<K>,
+    initial_free_energies: InitialFreeEnergies,
 
     /// Which state is each x from?
     ///
@@ -95,55 +116,55 @@ pub struct MBar<const N_TOT: usize, const K: usize> {
     #[builder(setter(strip_option), default)]
     x_kindices: Option<Vec<usize>>,
 
+    /// Set to True if verbose debug output is desired
+    #[builder(setter(skip), default = "false")]
+    verbose: bool,
+
+    /// Pointer to the MBAR object on Python's heap
+    ///
+    /// After Self is built, this should always be a valid pointer to an MBAR object. This is
+    /// enforced by it being a private field and MBar structs only being constructable via the
+    /// builder pattern.
     #[builder(setter(skip), default = "Python::with_gil(|py| py.None())")]
     mbar_obj: PyObject,
 }
 
-impl<const N_TOT: usize, const K: usize> MBarBuilder<N_TOT, K> {
+impl MBarBuilder {
     fn validate(&self) -> std::result::Result<(), String> {
-        if let Some(n_k) = self.n_k {
-            if N_TOT != n_k.iter().sum() {
-                return Err("n_k.sum() must equal the total number of samples (N_TOT)".to_string());
+        if let (Some(u_kn), Some(n_k)) = (&self.u_kn, &self.n_k) {
+            let k = u_kn.len_of(ndarray::Axis(0));
+            let n_tot = u_kn.len_of(ndarray::Axis(1));
+
+            if n_tot != n_k.iter().sum() {
+                return Err(format!(
+                    "n_k.sum() must equal the total number of samples ({})",
+                    n_tot
+                ));
             }
-        };
+
+            if k != n_k.len() {
+                return Err(format!(
+                    "n_k's length must equal the number of states ({})",
+                    k
+                ));
+            }
+        }
 
         Ok(())
     }
 
-    /// Build and initialise the MBAR implementation
-    pub fn build(&self) -> Result<MBar<N_TOT, K>> {
+    /// Build and initialise the MBAR implementation and print progress to STDOUT
+    pub fn build_verbose(&self) -> Result<MBar> {
         let mut new = self.build_inner()?;
+        new.verbose = true;
+        new.init()
+    }
 
-        let u_kn_refs: Vec<&[f64]> = new.u_kn.iter().map(|inner| inner.as_ref()).collect();
-
-        new.mbar_obj = Python::with_gil(|py| -> PyResult<PyObject> {
-            let mbar = py.import("pymbar")?.get("MBAR")?;
-            let kwargs: &PyDict = PyDict::new(py);
-            kwargs.set_item("u_kn", u_kn_refs)?;
-            kwargs.set_item("N_k", new.n_k.as_ref())?;
-            kwargs.set_item("maximum_iterations", new.maximum_iterations)?;
-            kwargs.set_item("relative_tolerance", new.relative_tolerance)?;
-            kwargs.set_item("verbose", new.verbose)?;
-            kwargs.set_item("x_kindices", new.x_kindices.clone())?;
-
-            match new.initial_free_energies {
-                InitialFreeEnergies::Specified(energies) => {
-                    kwargs.set_item("initial_f_k", energies.as_ref())?;
-                }
-                InitialFreeEnergies::Zeros => {
-                    kwargs.set_item("initialize", "zeros")?;
-                }
-                InitialFreeEnergies::BAR => {
-                    kwargs.set_item("initialize", "BAR")?;
-                }
-            }
-
-            let mbar = PyAny::call(mbar, (), Some(kwargs))?;
-
-            Ok(mbar.to_object(py))
-        })?;
-
-        Ok(new)
+    /// Build and initialise the MBAR implementation
+    pub fn build(&self) -> Result<MBar> {
+        let mut new = self.build_inner()?;
+        new.verbose = false;
+        new.init()
     }
 }
 
@@ -179,10 +200,56 @@ pub struct Pmf {
     pub df_ij: Option<Vec<Vec<f64>>>,
 }
 
-impl<const N_TOT: usize, const K: usize> MBar<N_TOT, K> {
+impl MBar {
+    /// Initialise the MBAR in Python; called by build methods
+    fn init(mut self) -> Result<Self> {
+        Python::with_gil(|py| {
+            let mbar = py.import("pymbar")?.get("MBAR")?;
+            let kwargs: &PyDict = PyDict::new(py);
+            kwargs.set_item("u_kn", PyArray::from_array(py, &self.u_kn))?;
+            kwargs.set_item(
+                "N_k",
+                PyArray::from_exact_iter(py, self.n_k.iter().copied()),
+            )?;
+            kwargs.set_item("maximum_iterations", self.maximum_iterations)?;
+            kwargs.set_item("relative_tolerance", self.relative_tolerance)?;
+            kwargs.set_item("verbose", self.verbose)?;
+            kwargs.set_item("x_kindices", self.x_kindices.clone())?;
+
+            match &self.initial_free_energies {
+                InitialFreeEnergies::Specified(energies) => {
+                    if energies.len() != self.k() {
+                        return Err(MBarError::ArrayLengthMismatch(energies.len(), self.k()));
+                    }
+                    let energies_py = PyArray::from_exact_iter(py, energies.iter().copied());
+                    kwargs.set_item("initial_f_k", energies_py)?;
+                }
+                InitialFreeEnergies::Zeros => {
+                    kwargs.set_item("initialize", "zeros")?;
+                }
+                InitialFreeEnergies::BAR => {
+                    kwargs.set_item("initialize", "BAR")?;
+                }
+            }
+
+            self.mbar_obj = PyAny::call(mbar, (), Some(kwargs))?.to_object(py);
+            Ok(self)
+        })
+    }
+
     /// Get a new builder for the `MBar` struct. `MBar` can only be constructed via the builder.
-    pub fn builder() -> MBarBuilder<N_TOT, K> {
+    pub fn builder() -> MBarBuilder {
         MBarBuilder::default()
+    }
+
+    /// $N_{tot}$, the total number of snapshots from all states
+    pub fn n_tot(&self) -> usize {
+        self.u_kn.len_of(ndarray::Axis(1))
+    }
+
+    /// $K$, the total number of thermodynamic states
+    pub fn k(&self) -> usize {
+        self.u_kn.len_of(ndarray::Axis(0))
     }
 
     /// Compute the free energy of occupying a number of bins.
@@ -191,15 +258,14 @@ impl<const N_TOT: usize, const K: usize> MBar<N_TOT, K> {
     ///
     /// # Parameters
     ///
-    /// `u_n: [f64; N_TOT]` --- `u_n[n]` is the reduced potential energy of snapshot `n` of state `k`
-    /// `for which the PMF is to be computed.
+    /// * `u_n[n]` is the reduced potential energy of snapshot `n` of state `k`
+    /// for which the PMF is to be computed.
     ///
-    /// `bin_n: [usize; N_TOT]` --- `bin_n[n]` is the bin index of snapshot `n` of state `k`.
-    /// `bin_n` can assume a value in 0..n_bins
+    /// * `bin_n[n]` is the bin index of snapshot `n` of state `k` and is in `0..n_bins`
     ///
-    /// `n_bins: usize` --- The number of bins
+    /// * `n_bins` is the number of bins. No bin may be empty of snapshots
     ///
-    /// `uncertainties: PmfUncertainties` --- Method for reporting uncertainties
+    /// * `uncertainties` is the method for reporting uncertainties
     ///
     /// # Notes
     ///
@@ -213,14 +279,19 @@ impl<const N_TOT: usize, const K: usize> MBar<N_TOT, K> {
     ///   respect to the bin of lowest free energy are then computed in the standard way.
     pub fn compute_pmf(
         &self,
-        u_n: [f64; N_TOT],
-        bin_n: [usize; N_TOT],
+        u_n: &[f64],
+        bin_n: &[usize],
         n_bins: usize,
         uncertainties: PmfUncertainties,
     ) -> Result<Pmf> {
-        Ok(Python::with_gil(|py| -> PyResult<Pmf> {
-            let mbar = &self.mbar_obj;
+        if u_n.len() != self.n_tot() {
+            return Err(MBarError::ArrayLengthMismatch(u_n.len(), self.n_tot()));
+        }
+        if bin_n.len() != self.n_tot() {
+            return Err(MBarError::ArrayLengthMismatch(bin_n.len(), self.n_tot()));
+        }
 
+        Ok(Python::with_gil(|py| -> PyResult<Pmf> {
             let kwargs: &PyDict = PyDict::new(py);
             kwargs.set_item("return_dict", true)?;
             match uncertainties {
@@ -239,12 +310,14 @@ impl<const N_TOT: usize, const K: usize> MBar<N_TOT, K> {
                 }
             }
 
-            let u_n_py = PyArray::from_exact_iter(py, u_n.iter().map(|&n| n));
-            let bin_n_py = PyArray::from_exact_iter(py, bin_n.iter().map(|&n| n));
+            let u_n_py = PyArray::from_exact_iter(py, u_n.iter().copied());
+            let bin_n_py = PyArray::from_exact_iter(py, bin_n.iter().copied());
 
-            let pmf_result =
-                mbar.call_method(py, "computePMF", (u_n_py, bin_n_py, n_bins), Some(kwargs))?;
-            let pmf_dict = pmf_result.as_ref(py);
+            let pmf_dict = self.mbar_obj.as_ref(py).call_method(
+                "computePMF",
+                (u_n_py, bin_n_py, n_bins),
+                Some(kwargs),
+            )?;
 
             let f_i = pmf_dict.get_item("f_i")?.extract()?;
             Ok(match uncertainties {
@@ -267,56 +340,17 @@ impl<const N_TOT: usize, const K: usize> MBar<N_TOT, K> {
             })
         })?)
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use crate::*;
-
-    #[test]
-    fn build_mbar() {
-        let mbar = MBarBuilder::<6, 3>::default()
-            .u_kn([
-                [1.4, 2.3, 3.7, 4.1, 7.7, 9.1],
-                [-1.6, -2.3, 9.7, 34.1, 27.7, 19.1],
-                [4.4, 7.3, 9.7, 8.1, 4.7, 3.1],
-            ])
-            .n_k([2, 2, 2])
-            .build_inner()
-            .unwrap();
-
-        assert_eq!(
-            mbar.u_kn,
-            [
-                [1.4, 2.3, 3.7, 4.1, 7.7, 9.1],
-                [-1.6, -2.3, 9.7, 34.1, 27.7, 19.1],
-                [4.4, 7.3, 9.7, 8.1, 4.7, 3.1],
-            ]
-        );
-        assert_eq!(mbar.n_k, [2, 2, 2]);
-        assert_eq!(mbar.maximum_iterations, 1000);
-        assert_eq!(mbar.relative_tolerance, 1.0e-6);
-        assert_eq!(mbar.verbose, false);
-        assert_eq!(mbar.initial_free_energies, InitialFreeEnergies::Zeros);
-        assert_eq!(mbar.x_kindices, None);
-    }
-
-    #[test]
-    fn init_mbar() {
-        let mbar = MBarBuilder::<6, 3>::default()
-            .u_kn([
-                [1.4, 2.3, 3.7, 4.1, 7.7, 9.1],
-                [-1.6, -2.3, 9.7, 34.1, 27.7, 19.1],
-                [4.4, 7.3, 9.7, 8.1, 4.7, 3.1],
-            ])
-            .n_k([2, 2, 2])
-            .build()
-            .unwrap();
-
+    /// Retrieve the weight matrix $W_nk$
+    pub fn w_nk(&self) -> ndarray::Array2<f64> {
         Python::with_gil(|py| {
-            let mbar_class = mbar.mbar_obj.getattr(py, "__class__").unwrap();
-            let mbar_class_name = mbar_class.getattr(py, "__name__").unwrap();
-            assert_eq!(mbar_class_name.extract::<String>(py).unwrap(), "MBAR");
-        });
+            self.mbar_obj
+                .as_ref(py)
+                .call_method0("W_nk")
+                .expect("Exception during infallible Python method")
+                .extract::<&PyArray2<f64>>()
+                .expect("Unexpected return type from Python method")
+                .to_owned_array()
+        })
     }
 }

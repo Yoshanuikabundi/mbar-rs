@@ -1,6 +1,6 @@
 [package]
 name = "mbar-rs"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["Josh Mitchell <yoshanuikabundi@gmail.com>"]
 edition = "2018"
 description = "Rust bindings for pymbar"
@@ -16,15 +16,19 @@ exclude = [
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[[bin]]
-name = "mbar-rs"
-path = "src/main.rs"
+[[example]]
+name = "pmf"
 
 [dependencies]
 # fstrings = "0.2"
 derive_builder = "0.9.0"
 pyo3 = "0.12.3"
 numpy = "0.12.1"
+ndarray = "0.13.1"
+thiserror = "1.0.21"
+
+[dev-dependencies]
+anyhow = "1.0"
 
 [package.metadata.docs.rs]
 rustdoc-args = [ "--html-in-header", "katex.html" ]

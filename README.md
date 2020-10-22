@@ -1,5 +1,5 @@
 # mbar-rs
-Rust bindings for pymbar. Requires nightly for const generics.
+Rust bindings for pymbar.
 
 ```rust
 use mbar_rs::*;
