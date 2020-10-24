@@ -12,10 +12,16 @@
 #[macro_use]
 extern crate derive_builder;
 
-use numpy::{PyArray, PyArray2};
+use ndarray::{Array1, Array2, Axis};
+use numpy::{PyArray, PyArray1, PyArray2};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use thiserror::Error;
+
+#[allow(dead_code)]
+fn def<T: Default>() -> T {
+    Default::default()
+}
 
 /// Enum for errors in this crate
 #[derive(Error, Debug)]
@@ -86,7 +92,7 @@ impl Default for InitialFreeEnergies {
 #[builder(build_fn(validate = "Self::validate", name = "build_inner", private))]
 pub struct MBar {
     /// `u_kn[k][n]` is the reduced potential energy of configuration n evaluated at state `k`
-    u_kn: ndarray::Array2<f64>,
+    u_kn: Array2<f64>,
 
     /// `n_k[k]` is the number of uncorrelated snapshots sampled from state `k`
     ///
@@ -94,7 +100,7 @@ pub struct MBar {
     /// 2nd `n_k` the second state, and so forth. This only becomes important for BAR --- MBAR does
     /// not care which samples are from which state. We should eventually allow this assumption to
     /// be overwritten by parameters passed from above, once u_kln is phased out.
-    n_k: ndarray::Array1<usize>,
+    n_k: Array1<usize>,
 
     /// Set to limit the maximum number of iterations performed
     #[builder(default = "1000")]
@@ -132,8 +138,8 @@ pub struct MBar {
 impl MBarBuilder {
     fn validate(&self) -> std::result::Result<(), String> {
         if let (Some(u_kn), Some(n_k)) = (&self.u_kn, &self.n_k) {
-            let k = u_kn.len_of(ndarray::Axis(0));
-            let n_tot = u_kn.len_of(ndarray::Axis(1));
+            let k = u_kn.len_of(Axis(0));
+            let n_tot = u_kn.len_of(Axis(1));
 
             if n_tot != n_k.iter().sum() {
                 return Err(format!(
@@ -244,12 +250,275 @@ impl MBar {
 
     /// $N_{tot}$, the total number of snapshots from all states
     pub fn n_tot(&self) -> usize {
-        self.u_kn.len_of(ndarray::Axis(1))
+        self.u_kn.len_of(Axis(1))
     }
 
     /// $K$, the total number of thermodynamic states
     pub fn k(&self) -> usize {
-        self.u_kn.len_of(ndarray::Axis(0))
+        self.u_kn.len_of(Axis(0))
+    }
+
+    /// `u_kn[k][n]` is the reduced potential energy of configuration n evaluated at state `k`
+    pub fn u_kn(&self) -> &Array2<f64> {
+        &self.u_kn
+    }
+
+    /// `n_k[k]` is the number of uncorrelated snapshots sampled from state `k`
+    ///
+    /// We assume that the states are ordered such that the first `n_k` are from the first state, the
+    /// 2nd `n_k` the second state, and so forth. This only becomes important for BAR --- MBAR does
+    /// not care which samples are from which state. We should eventually allow this assumption to
+    /// be overwritten by parameters passed from above, once u_kln is phased out.
+    pub fn n_k(&self) -> &Array1<usize> {
+        &self.n_k
+    }
+
+    /// Which state is each x from?
+    ///
+    /// Usually doesn’t matter, but does for BAR. We assume the samples are in K order (the first
+    /// `n_k[0]` samples are from the 0th state, the next `n_k[1]` samples from the 1st state, and
+    /// so forth.
+    pub fn x_kindices(&self) -> &Option<Vec<usize>> {
+        &self.x_kindices
+    }
+
+    /// Retrieve a copy of the relative dimensionless free energy $f_k$ of states $k$
+    pub fn f_k(&self) -> Array1<f64> {
+        Python::with_gil(|py| {
+            self.mbar_obj
+                .as_ref(py)
+                .getattr("f_k")
+                .expect("Exception retrieving Python attribute MBAR.f_k")
+                .extract::<&PyArray1<f64>>()
+                .expect("Unexpected type from Python attribute MBAR.f_k")
+                .to_owned_array()
+        })
+    }
+
+    /// Retrieve a copy of the log weight matrix $\ln(W_nk)$
+    pub fn log_w_nk(&self) -> Array2<f64> {
+        Python::with_gil(|py| {
+            self.mbar_obj
+                .as_ref(py)
+                .getattr("Log_W_nk")
+                .expect("Exception retrieving Python attribute MBAR.Log_W_nk")
+                .extract::<&PyArray2<f64>>()
+                .expect("Unexpected type from Python attribute MBAR.Log_W_nk")
+                .to_owned_array()
+        })
+    }
+
+    /// Retrieve a copy of the weight matrix $W_nk$
+    pub fn w_nk(&self) -> Array2<f64> {
+        Python::with_gil(|py| {
+            self.mbar_obj
+                .as_ref(py)
+                .call_method0("W_nk")
+                .expect("Exception during infallible Python method MBAR.w_nk()")
+                .extract::<&PyArray2<f64>>()
+                .expect("Unexpected return type from Python method MBAR.w_nk()")
+                .to_owned_array()
+        })
+    }
+
+    /// Compute the effective sample number of each state
+    ///
+    /// The effective sample number $n_\mathrm{eff}(k)$ is an estimate of how many samples are
+    /// contributing to the average at a given state.
+    ///
+    /// # Returns
+    ///
+    /// `n_eff[k]` is the estimated number of samples contributing to estimates at each
+    /// state k. An estimate to how many samples collected just at state k would result
+    /// in similar statistical efficiency as the MBAR simulation. Valid for both sampled
+    /// states, in which the weight will be greater than `N_k[k]`, and unsampled states.
+    ///
+    /// # Notes
+    ///
+    /// Using Kish (1965) formula (Kish, Leslie (1965). Survey Sampling. New York: Wiley)
+    ///
+    /// As the weights become more concentrated in fewer observations, the effective sample size
+    /// shrinks (<http://healthcare-economist.com/2013/08/22/effective-sample-size/>):
+    ///
+    /// $$
+    ///     n_\mathrm{eff}(k)
+    ///         =  \frac{(\sum_{n=1}^N w_k n)^2}{\sum_{n=1}^N w_k n^2}
+    ///         =  \frac{1}{\sum_{n=1}^N w_k n^2}
+    /// $$
+    ///
+    /// the effective sample number is most useful to diagnose when there are only a few samples
+    /// contributing to the averages.
+    pub fn n_eff(&self) -> Array1<f64> {
+        self.compute_effective_sample_number(false)
+    }
+
+    /// Compute the effective sample number of each state;
+    ///
+    /// The effective sample number $n_\mathrm{eff}(k)$ is an estimate of how many samples are
+    /// contributing to the average at a given state. It also counts the efficiency of the
+    /// sampling, which is simply the ratio of the effective number of samples at a given
+    /// state to the total number of samples collected.  This is printed in verbose output,
+    /// but is not returned for now.
+    ///
+    /// # Returns
+    ///
+    /// `n_eff[k]` is the estimated number of samples contributing to estimates at each
+    /// state k. An estimate to how many samples collected just at state k would result
+    /// in similar statistical efficiency as the MBAR simulation. Valid for both sampled
+    /// states, in which the weight will be greater than `N_k[k]`, and unsampled states.
+    ///
+    /// # Notes
+    ///
+    /// Using Kish (1965) formula (Kish, Leslie (1965). Survey Sampling. New York: Wiley)
+    ///
+    /// As the weights become more concentrated in fewer observations, the effective sample size
+    /// shrinks (<http://healthcare-economist.com/2013/08/22/effective-sample-size/>):
+    ///
+    /// $$
+    ///     n_\mathrm{eff}(k)
+    ///         =  \frac{(\sum_{n=1}^N w_k n)^2}{\sum_{n=1}^N w_k n^2}
+    ///         =  \frac{1}{\sum_{n=1}^N w_k n^2}
+    /// $$
+    ///
+    /// the effective sample number is most useful to diagnose when there are only a few samples
+    /// contributing to the averages.
+    pub fn n_eff_verbose(&self) -> Array1<f64> {
+        self.compute_effective_sample_number(true)
+    }
+
+    /// Calculate the variance of a weighted sum of free energy differences.
+    ///
+    /// For example,  $\mathrm{Var}(\sum_i a_i df_i)$
+    ///
+    /// # Parameters
+    ///
+    /// `d_ij` : a matrix of standard deviations of the quantities f_i - f_j
+    /// `k` : The number of states in each 'chunk', has to be constant
+    ///
+    /// # Returns
+    ///
+    /// KxK variance matrix for the sums or differences $\sum_i a_i df_i$
+    ///
+    /// # Notes
+    ///
+    /// This derivation is taken from the pymbar documentation and I'm not confident my
+    /// interpretation is correct.
+    ///
+    /// We explicitly lay out the calculations for four variables (where each variable
+    /// is a logarithm of a partition function), then generalize.
+    /// The uncertainty in the sum of two weighted differences is
+    ///
+    /// $$
+    /// \begin{aligned}
+    ///     \mathrm{Var}(a_1(f_{i1} - f_{j1}) + a_2(f_{i2} - f_{j2})) =&\ a_1^2 \mathrm{Var}(f_{i1} - f_{j1}) \\\\
+    ///         & + a_2^2 \mathrm{Var}(f_{i2} - f_{j2}) \\\\
+    ///         & + 2 a_1 a_2 \mathrm{cov}(f_{i1} - f_{j1}, f_{i2} - f_{j2})
+    /// \end{aligned}
+    /// $$
+    /// $$
+    /// \begin{aligned}
+    ///     \mathrm{cov}(f_{i1} - f_{j1}, f_{i2} - f_{j2}) =&\ \mathrm{cov}(f_{i1},f_{i2}) \\\\
+    ///         & - \mathrm{cov}(f_{i1},f_{j2}) \\\\
+    ///         & - \mathrm{cov}(f_{j1},f_{i2}) \\\\
+    ///         & + \mathrm{cov}(f_{j1},f_{j2})
+    /// \end{aligned}
+    /// $$
+    ///
+    /// call:
+    ///
+    /// $$
+    /// \begin{aligned}
+    ///     f_{i1} &= a \\\\
+    ///     f_{j1} &= b \\\\
+    ///     f_{i2} &= c \\\\
+    ///     f_{j2} &= d \\\\
+    ///     a_1^2 \mathrm{Var}(a-b) + a_2^2 \mathrm{Var}(c-d) + 2 a_1 a_2 &= \mathrm{cov}(a-b,c-d)
+    /// \end{aligned}
+    /// $$
+    ///
+    /// We want
+    ///
+    /// $$2 \mathrm{cov}(a-b,c-d) = 2 \mathrm{cov}(a,c)-2 \mathrm{cov}(a,d)-2 \mathrm{cov}(b,c)+2 \mathrm{cov}(b,d)$$
+    ///
+    /// Since
+    ///
+    /// $$\mathrm{Var}(x-y) = \mathrm{Var}(x) + \mathrm{Var}(y) - 2 \mathrm{cov}(x,y)$$
+    ///
+    /// It follows
+    ///
+    /// $$2 \mathrm{cov}(x,y) = -\mathrm{Var}(x-y) + \mathrm{Var}(x) + \mathrm{Var}(y)$$
+    ///
+    /// So, we get
+    ///
+    /// $$
+    /// \begin{aligned}
+    ///     2 \mathrm{cov}(a,c) &= -\mathrm{Var}(a-c) + \mathrm{Var}(a) + \mathrm{Var}(c) \\\\
+    ///     -2 \mathrm{cov}(a,d) &= +\mathrm{Var}(a-d) - \mathrm{Var}(a) - \mathrm{Var}(d) \\\\
+    ///     -2 \mathrm{cov}(b,c) &= +\mathrm{Var}(b-c) - \mathrm{Var}(b) - \mathrm{Var}(c) \\\\
+    ///     2 \mathrm{cov}(b,d) &= -\mathrm{Var}(b-d) + \mathrm{Var}(b) + \mathrm{Var}(d)
+    /// \end{aligned}
+    /// $$
+    ///
+    /// adding up, finally :
+    ///
+    /// $$
+    /// \begin{aligned}
+    ///     2 \mathrm{cov}(a-b,c-d) =&\ 2 \mathrm{cov}(a,c) \\\\
+    ///                              &\ -2 \mathrm{cov}(a,d) \\\\
+    ///                              &\ -2 \mathrm{cov}(b,c) \\\\
+    ///                              &\ +2 \mathrm{cov}(b,d) \\\\
+    ///                             =&\ - \mathrm{Var}(a-c) \\\\
+    ///                              &\ + \mathrm{Var}(a-d) \\\\
+    ///                              &\ + \mathrm{Var}(b-c) \\\\
+    ///                              &\ - \mathrm{Var}(b-d)
+    /// \end{aligned}
+    /// $$
+    ///
+    /// $$
+    /// \begin{aligned}
+    ///     a_1^2 \mathrm{Var}(a-b)+a_2^2 \mathrm{Var}(c-d) + 2 a_1 a_2 \mathrm{cov}(a-b,c-d) =
+    ///         &\ a_1^2 \mathrm{Var}(a-b) \\\\
+    ///         &\ + a_2^2 \mathrm{Var}(c-d) \\\\
+    ///         &\ + a_1a_2 [-\mathrm{Var}(a-c)+\mathrm{Var}(a-d)+\mathrm{Var}(b-c)-\mathrm{Var}(b-d)]
+    /// \end{aligned}
+    /// $$
+    ///
+    /// $$
+    /// \begin{aligned}
+    ///     \mathrm{Var}(a_1(f_{i1} - f_{j1}) + a_2(f_{i2} - f_{j2})) =&\ a_1^2 \mathrm{Var}(f_{i1} - f_{j1}) \\\\
+    ///         &\ + a_2^2 \mathrm{Var}(f_{i2} - f_{j2}) \\\\
+    ///         &\ + 2a_1 a_2 \mathrm{cov}(f_{i1} - f_{j1}, f_{i2} - f_{j2}) \\\\
+    ///         =&\ a_1^2 \mathrm{Var}(f_{i1} - f_{j1}) \\\\
+    ///         &\ + a_2^2 \mathrm{Var}(f_{i2} - f_{j2}) \\\\
+    ///         &\ + a_1 a_2 [-\mathrm{Var}(f_{i1} - f_{i2}) + \mathrm{Var}(f_{i1} - f_{j2}) + \mathrm{Var}(f_{j1}-f_{i2}) - \mathrm{Var}(f_{j1} - f_{j2})]
+    /// \end{aligned}
+    /// $$
+    ///
+    /// assume two arrays of free energy differences, and an array of constant vectors $a$.
+    /// we want the variance $\mathrm{Var}(\sum_k a_k (f_{i,k} - f_{j,k}))$
+    /// Each set is separated from the other by an offset $K$. The same process applies with
+    /// the sum, with the single $\mathrm{Var}$ terms and the pair terms
+    pub fn covariance_of_sums(
+        &self,
+        d_ij: Array2<f64>,
+        k: usize,
+        a: Array1<f64>,
+    ) -> Result<Array2<f64>> {
+        Ok(Python::with_gil(|py| -> PyResult<_> {
+            Ok(self
+                .mbar_obj
+                .as_ref(py)
+                .call_method1(
+                    "computeCovarianceOfSums",
+                    (
+                        PyArray::from_array(py, &d_ij),
+                        k,
+                        PyArray::from_array(py, &a),
+                    ),
+                )?
+                .extract::<&PyArray2<f64>>()?
+                .to_owned_array())
+        })?)
     }
 
     /// Compute the free energy of occupying a number of bins.
@@ -341,15 +610,18 @@ impl MBar {
         })?)
     }
 
-    /// Retrieve the weight matrix $W_nk$
-    pub fn w_nk(&self) -> ndarray::Array2<f64> {
+    fn compute_effective_sample_number(&self, verbose: bool) -> Array1<f64> {
         Python::with_gil(|py| {
             self.mbar_obj
                 .as_ref(py)
-                .call_method0("W_nk")
-                .expect("Exception during infallible Python method")
-                .extract::<&PyArray2<f64>>()
-                .expect("Unexpected return type from Python method")
+                .call_method1("computeEffectiveSampleNumber", (verbose,))
+                .expect(
+                    "Exception during infallible Python method MBAR.computeEffectiveSampleNumber()",
+                )
+                .extract::<&PyArray1<f64>>()
+                .expect(
+                    "Unexpected return type from Python method MBAR.computeEffectiveSampleNumber()",
+                )
                 .to_owned_array()
         })
     }
