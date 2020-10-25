@@ -29,6 +29,7 @@ thiserror = "1.0.21"
 
 [dev-dependencies]
 anyhow = "1.0"
+itertools = "0.9"
 
 [package.metadata.docs.rs]
 rustdoc-args = [ "--html-in-header", "katex.html" ]

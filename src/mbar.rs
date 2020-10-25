@@ -79,7 +79,7 @@ pub struct MBar {
     /// `n_k[0]` samples are from the 0th state, the next `n_k[1]` samples from the 1st state, and
     /// so forth.
     #[builder(setter(strip_option), default)]
-    x_kindices: Option<Vec<usize>>,
+    x_kindices: Option<Array1<usize>>,
 
     /// Set to True if verbose debug output is desired
     #[builder(setter(skip), default = "false")]
@@ -147,7 +147,9 @@ impl MBar {
             kwargs.set_item("maximum_iterations", self.maximum_iterations)?;
             kwargs.set_item("relative_tolerance", self.relative_tolerance)?;
             kwargs.set_item("verbose", self.verbose)?;
-            kwargs.set_item("x_kindices", self.x_kindices.clone())?;
+            if let Some(x_kindices) = &self.x_kindices {
+                kwargs.set_item("x_kindices", PyArray::from_array(py, x_kindices))?;
+            }
 
             match &self.initial_free_energies {
                 InitialFreeEnergies::Specified(energies) => {
@@ -205,7 +207,7 @@ impl MBar {
     /// Usually doesn’t matter, but does for BAR. We assume the samples are in K order (the first
     /// `n_k[0]` samples are from the 0th state, the next `n_k[1]` samples from the 1st state, and
     /// so forth.
-    pub fn x_kindices(&self) -> &Option<Vec<usize>> {
+    pub fn x_kindices(&self) -> &Option<Array1<usize>> {
         &self.x_kindices
     }
 

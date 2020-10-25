@@ -1,4 +1,4 @@
-use pyo3::prelude::PyErr;
+use pyo3::prelude::*;
 use thiserror::Error;
 
 /// Enum for errors in this crate
@@ -19,6 +19,23 @@ pub enum MBarError {
     /// Error returned when an array is the wrong length
     #[error("Array of length {0} is incorrect; length should be {1}")]
     ArrayLengthMismatch(usize, usize),
+
+    /// Error returned when an integer from Python fails to cast to usize
+    #[error("Unexpected Python exception was not handled")]
+    PythonNotUsize {
+        #[allow(missing_docs)]
+        #[from]
+        source: std::num::TryFromIntError,
+    },
+}
+
+impl MBarError {
+    /// Print the python error message, if present
+    pub fn print(&self) {
+        if let MBarError::UnhandledPythonException { source } = &self {
+            Python::with_gil(|py| source.print(py))
+        }
+    }
 }
 
 impl From<String> for MBarError {
