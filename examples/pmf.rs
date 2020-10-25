@@ -1,5 +1,5 @@
 use anyhow::Result;
-use mbar_rs::*;
+use mbar_rs::mbar::*;
 use ndarray::array;
 
 fn main() -> Result<()> {
