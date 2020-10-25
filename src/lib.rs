@@ -14,6 +14,7 @@ extern crate derive_builder;
 
 /// Types and methods for computing the Multistate Bennet Acceptance Ratio method
 pub mod mbar;
+pub use mbar::*;
 
 /// A number of test systems with analytically or numerically computable expectations or free
 /// energies we use to validate its implementation. These test systems are also convenient to
@@ -23,3 +24,6 @@ pub mod testsystems;
 
 /// Error types for the crate
 pub mod errors;
+pub use errors::*;
+
+pub use ndarray::array;
