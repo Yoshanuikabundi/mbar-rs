@@ -5,6 +5,7 @@
 [![lib.rs](https://img.shields.io/crates/v/mbar-rs?label=lib.rs&logo=rust)](https://lib.rs/crates/mbar-rs)
 [![Latest Documentation](https://docs.rs/mbar-rs/badge.svg)](https://docs.rs/mbar-rs)
 [![MIT License](https://img.shields.io/github/license/yoshanuikabundi/mbar-rs)](https://github.com/Yoshanuikabundi/mbar-rs/blob/main/LICENSE)
+[![dependency status](https://deps.rs/repo/github/yoshanuikabundi/mbar-rs/status.svg)](https://deps.rs/repo/github/yoshanuikabundi/mbar-rs)
 
 Safe and Rusty bindings for [pymbar](https://github.com/choderalab/pymbar). Thanks to Kyle A. Beauchamp, John D. Chodera, Levi N. Naden and Michael R. Shirts for their work on the underlying Python library, which must be available on your machine for this to work. I've also cribbed shamelessly from their documentation.
 
